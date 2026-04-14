@@ -17,7 +17,10 @@ bot = Bot(token=TOKEN)
 router = Router()
 
 # ТВОЯ ГРУППА
-GROUP_ID = -7770818181
+GROUP_ID = -3349514214
+
+# ТВОЙ USER ID (только ты можешь добавлять медиа)
+ADMIN_ID = 7770818181
 
 DB_FILE = "db.json"
 TRACK_PRICE = 5
@@ -77,10 +80,11 @@ def add_ref_bonus(buyer_id, price):
         save_db(db)
 
 
-# ---------------------- ЛОВИМ МЕДИА ТОЛЬКО В ТВОЕЙ ГРУППЕ ----------------------
+# ---------------------- ЛОВИМ МЕДИА (ТОЛЬКО ТЫ, ТОЛЬКО В ГРУППЕ) ----------------------
 
 @router.message(
     (F.chat.id == GROUP_ID)
+    & (F.from_user.id == ADMIN_ID)
     & (F.audio | F.photo | F.video | F.document | F.voice | F.video_note)
 )
 async def catch_media(message: types.Message):
@@ -92,7 +96,7 @@ async def catch_media(message: types.Message):
         title = message.audio.title or message.audio.file_name or "Аудио"
 
     elif message.document:
-        file_id = message.document.file.file_id
+        file_id = message.document.file_id
         title = message.document.file_name or "Документ"
 
     elif message.photo:
