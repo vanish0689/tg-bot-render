@@ -16,9 +16,11 @@ TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 router = Router()
 
+GROUP_USERNAME = "Kastle202589"   # ← твоя группа
+
 DB_FILE = "db.json"
-TRACK_PRICE = 5          # цена за единицу медиа в звёздах
-REF_PERCENT = 0.20       # 20% реферальный бонус
+TRACK_PRICE = 5
+REF_PERCENT = 0.20
 
 
 # ---------------------- БАЗА ДАННЫХ ----------------------
@@ -74,10 +76,10 @@ def add_ref_bonus(buyer_id, price):
         save_db(db)
 
 
-# ---------------------- ЛОВИМ МЕДИА В ГРУППЕ ----------------------
+# ---------------------- ЛОВИМ МЕДИА ТОЛЬКО В ТВОЕЙ ГРУППЕ ----------------------
 
 @router.message(
-    F.chat.type.in_({"group", "supergroup"})
+    (F.chat.username == GROUP_USERNAME)
     & (F.audio | F.photo | F.video | F.document)
 )
 async def catch_media(message: types.Message):
