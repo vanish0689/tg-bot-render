@@ -9,7 +9,7 @@ from aiogram.types import LabeledPrice, PreCheckoutQuery, InlineKeyboardButton, 
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 # --- ТВОИ ДАННЫЕ (УЖЕ ВСТАВЛЕНЫ) ---
-TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"  # <--- ВСТАВЬ СЮДА ТОКЕН
+TOKEN = "8608551495:AAE82eaqbxy-sTKkmDpuYBcyGpAcHOsSWZE"  # <--- ВСТАВЬ СЮДА ТОКЕН
 CHANNEL_ID = -1003349514214  # ID канала
 CHANNEL_URL = "https://t.me/Kastle202589"
 ADMIN_ID = 7770818181
