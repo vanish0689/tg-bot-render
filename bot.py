@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import secrets
 from typing import Dict, Any
 
 from aiogram import Bot, Dispatcher, F
@@ -25,34 +24,30 @@ logger = logging.getLogger(__name__)
 # ================== НАСТРОЙКИ ==================
 
 BOT_TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"   # <-- ВСТАВЬ СВОЙ ТОКЕН
-BOT_USERNAME = "YourBotUsername"    # <-- ВСТАВЬ username бота без @
+BOT_USERNAME = "er_e4r_bot"         # <-- имя бота без @ (твоё: er_e4r_bot)
 
-OWNER_ID = 7770818181
-CHANNEL_ID = -1003349514214
+OWNER_ID = 7770818181               # <-- твой Telegram ID
+CHANNEL_ID = -1003349514214         # <-- id канала для проверки подписки
 CHANNEL_URL = "https://t.me/Kastle202589"
 
-ADMIN_PERCENT = 80   # доля админа
-OWNER_PERCENT = 20   # доля владельца
-
+# Типы контента и цены в Stars
 CONTENT_TYPES = {
-    "article":   {"title": "Статья",       "price": 1},
-    "poem":      {"title": "Стихотворение","price": 3},
-    "song_text": {"title": "Текст песни",  "price": 5},
-    "image":     {"title": "Картинка",     "price": 5},
-    "music":     {"title": "Музыка",       "price": 10},
-    "video":     {"title": "Видео",        "price": 15},
+    "article": {"title": "Статья", "price": 1},
+    "poem": {"title": "Стихотворение", "price": 3},
+    "song_text": {"title": "Текст песни", "price": 5},
+    "image": {"title": "Картинка", "price": 5},
+    "music": {"title": "Музыка", "price": 10},
+    "video": {"title": "Видео", "price": 15},
 }
 
 # ================== ХРАНИЛИЩЕ ==================
 
-ADMINS: set[int] = {OWNER_ID}
-ADMIN_TOKENS: Dict[str, int] = {}   # token -> creator_id
-BALANCE: Dict[int, int] = {}        # user_id -> stars
-
-FILES: Dict[int, Dict[str, Any]] = {}  # file_id -> data
+FILES: Dict[int, Dict[str, Any]] = {}  # file_id -> {owner_id, type, title, tg_file_id, text}
 FILE_COUNTER = 0
 
-PENDING_TYPE: Dict[int, str] = {}   # user_id -> type_key
+BALANCE: Dict[int, int] = {}  # user_id -> stars (только владелец будет получать начисления)
+
+PENDING_TYPE: Dict[int, str] = {}  # owner_id -> type_key (для загрузки)
 
 # ================== МЕНЮ ==================
 
@@ -88,15 +83,12 @@ def buy_buttons(file_internal_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMINS
-
-
 async def is_subscribed(bot: Bot, user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(CHANNEL_ID, user_id)
         return member.status not in ("left", "kicked")
-    except:
+    except Exception as e:
+        logger.warning(f"Ошибка проверки подписки: {e}")
         return False
 
 
@@ -135,25 +127,66 @@ async def main():
     )
     dp = Dispatcher()
 
-    # ---------- /start с deep-link ----------
+    # ---------- /start с deep-link (file_) ----------
 
     @dp.message(CommandStart())
     async def cmd_start(message: Message):
+        # Разбор аргумента deep-link: /start <args>
         text = message.text or ""
         parts = text.split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
 
-        if args.startswith("admin_"):
-            token = args.replace("admin_", "")
-            if token in ADMIN_TOKENS:
-                ADMINS.add(message.from_user.id)
-                del ADMIN_TOKENS[token]
-                await message.answer("Вы назначены администратором бота.")
-            else:
-                await message.answer("Недействительная или уже использованная ссылка.")
+        # Если пришли по ссылке на файл: start=file_<id>
+        if args.startswith("file_"):
+            try:
+                fid = int(args.replace("file_", ""))
+            except:
+                await message.answer("Неверная ссылка.")
+                return
 
+            if fid not in FILES:
+                await message.answer("Файл не найден или ссылка неверна.")
+                return
+
+            # Проверяем подписку
+            subscribed = await is_subscribed(bot, message.from_user.id)
+            subscribe_kb = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="📢 Подписаться", url=CHANNEL_URL)],
+                    [InlineKeyboardButton(text="🔄 Я подписался", callback_data=f"check_sub_{fid}")],
+                ]
+            )
+
+            if not subscribed:
+                await message.answer("Чтобы получить доступ к файлу, подпишитесь на канал:", reply_markup=subscribe_kb)
+                return
+
+            # Показываем превью и кнопку покупки
+            file = FILES[fid]
+            c = CONTENT_TYPES[file["type"]]
+            try:
+                if file["type"] in ("article", "poem", "song_text"):
+                    await message.answer(file["text"], protect_content=True)
+                elif file["type"] == "image":
+                    await message.answer_photo(file["tg_file_id"], caption=file["title"], protect_content=True)
+                elif file["type"] == "music":
+                    await message.answer_audio(file["tg_file_id"], caption=file["title"], protect_content=True)
+                elif file["type"] == "video":
+                    await message.answer_video(file["tg_file_id"], caption=file["title"], protect_content=True)
+                else:
+                    await message.answer_document(file["tg_file_id"], caption=file["title"], protect_content=True)
+            except Exception as e:
+                logger.error(f"Ошибка превью при /start file_: {e}")
+                await message.answer("Не удалось показать превью файла.")
+
+            await message.answer(
+                f"<b>{file['title']}</b>\nТип: {c['title']}\nЦена: {c['price']}⭐",
+                reply_markup=buy_buttons(fid)
+            )
+            return
+
+        # Обычный /start без аргумента
         subscribed = await is_subscribed(bot, message.from_user.id)
-
         subscribe_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="📢 Подписаться", url=CHANNEL_URL)],
@@ -170,7 +203,7 @@ async def main():
 
         await message.answer("Добро пожаловать!", reply_markup=main_menu)
 
-    # ---------- Кнопка “Я подписался” ----------
+    # ---------- Кнопка “Я подписался” (общая) ----------
 
     @dp.callback_query(F.data == "check_sub_again")
     async def check_sub_again(callback: CallbackQuery):
@@ -182,7 +215,46 @@ async def main():
         else:
             await callback.answer("Вы всё ещё не подписаны.", show_alert=True)
 
-    # ---------- Вспомогательная проверка подписки ----------
+    # ---------- Кнопка “Я подписался” для конкретного файла ----------
+
+    @dp.callback_query(F.data.regexp(r"^check_sub_\d+$"))
+    async def check_sub_for_file(callback: CallbackQuery):
+        fid = int(callback.data.split("_")[2])
+        subscribed = await is_subscribed(callback.bot, callback.from_user.id)
+
+        if not subscribed:
+            await callback.answer("Вы всё ещё не подписаны.", show_alert=True)
+            return
+
+        if fid not in FILES:
+            await callback.message.edit_text("Файл не найден.")
+            return
+
+        file = FILES[fid]
+        c = CONTENT_TYPES[file["type"]]
+
+        try:
+            if file["type"] in ("article", "poem", "song_text"):
+                await callback.message.answer(file["text"], protect_content=True)
+            elif file["type"] == "image":
+                await callback.message.answer_photo(file["tg_file_id"], caption=file["title"], protect_content=True)
+            elif file["type"] == "music":
+                await callback.message.answer_audio(file["tg_file_id"], caption=file["title"], protect_content=True)
+            elif file["type"] == "video":
+                await callback.message.answer_video(file["tg_file_id"], caption=file["title"], protect_content=True)
+            else:
+                await callback.message.answer_document(file["tg_file_id"], caption=file["title"], protect_content=True)
+        except Exception as e:
+            logger.error(f"Ошибка превью после подписки: {e}")
+            await callback.message.answer("Не удалось показать превью файла.")
+
+        await callback.message.answer(
+            f"<b>{file['title']}</b>\nТип: {c['title']}\nЦена: {c['price']}⭐",
+            reply_markup=buy_buttons(fid)
+        )
+        await callback.answer()
+
+    # ---------- Вспомогательная проверка подписки для команд ----------
 
     async def require_sub(message: Message) -> bool:
         if not await is_subscribed(bot, message.from_user.id):
@@ -190,63 +262,14 @@ async def main():
             return False
         return True
 
-    # ---------- /myref для всех админов ----------
+    # ---------- Команда владельца: посмотреть баланс ----------
 
-    @dp.message(Command("myref"))
-    async def myref(message: Message):
-        if not is_admin(message.from_user.id):
-            await message.answer("Эта команда доступна только администраторам.")
-            return
-
-        token = secrets.token_urlsafe(8)
-        ADMIN_TOKENS[token] = message.from_user.id
-
-        link = f"https://t.me/{BOT_USERNAME}?start=admin_{token}"
-        await message.answer(f"Ваша реферальная ссылка для нового админа:\n{link}")
-
-    # ---------- Балансы и статистика ----------
-
-    @dp.message(Command("balance"))
-    async def cmd_balance(message: Message):
-        bal = BALANCE.get(message.from_user.id, 0)
-        await message.answer(f"Ваш баланс: {bal}⭐")
-
-    @dp.message(Command("owner_stats"))
-    async def owner_stats(message: Message):
+    @dp.message(Command("owner_balance"))
+    async def owner_balance(message: Message):
         if message.from_user.id != OWNER_ID:
             return
         bal = BALANCE.get(OWNER_ID, 0)
-        await message.answer(f"Доход владельца: {bal}⭐")
-
-    @dp.message(Command("withdraw"))
-    async def withdraw(message: Message):
-        if not is_admin(message.from_user.id):
-            return
-
-        parts = message.text.split()
-        if len(parts) != 2 or not parts[1].isdigit():
-            await message.answer("Использование: /withdraw <сумма>")
-            return
-
-        amount = int(parts[1])
-        bal = BALANCE.get(message.from_user.id, 0)
-
-        if amount <= 0 or amount > bal:
-            await message.answer("Недостаточно средств или неверная сумма.")
-            return
-
-        text = (
-            f"Запрос на вывод:\n"
-            f"Пользователь: {message.from_user.id}\n"
-            f"Сумма: {amount}⭐\n"
-            f"Текущий баланс: {bal}⭐"
-        )
-        try:
-            await bot.send_message(OWNER_ID, text)
-        except Exception as e:
-            logger.error(f"Не удалось отправить запрос владельцу: {e}")
-
-        await message.answer("Запрос на вывод отправлен владельцу. Ожидайте подтверждения.")
+        await message.answer(f"Баланс владельца: {bal}⭐")
 
     # ---------- Главное меню ----------
 
@@ -274,18 +297,18 @@ async def main():
     @dp.message(F.text == "ℹ️ Помощь")
     async def help_button(message: Message):
         await message.answer(
-            "• Только админы могут загружать файлы.\n"
+            "• Только владелец может загружать файлы.\n"
             "• Перед загрузкой выбирается тип (статья, текст песни, стих, картинка, музыка, видео).\n"
             "• Цена зависит от типа.\n"
             "• Все сообщения и файлы защищены от пересылки.\n"
-            "• Есть реферальная система админов и баланс.",
+            "• После загрузки бот выдаёт ссылку для публикации в канале.",
             reply_markup=main_menu
         )
 
     @dp.message(F.text == "📤 Отправить файл")
     async def send_file_menu(message: Message):
-        if not is_admin(message.from_user.id):
-            await message.answer("У вас нет прав администратора.")
+        if message.from_user.id != OWNER_ID:
+            await message.answer("Только владелец может загружать файлы.")
             return
         await message.answer("Выберите тип:", reply_markup=choose_type_menu)
 
@@ -294,14 +317,14 @@ async def main():
         PENDING_TYPE.pop(message.from_user.id, None)
         await message.answer("Отменено.", reply_markup=main_menu)
 
-    # ---------- Выбор типа контента админом ----------
+    # ---------- Выбор типа контента владельцем ----------
 
     @dp.message(F.text.in_([
         "📰 Статья", "🎵 Текст песни", "✒️ Стихотворение",
         "🖼 Картинка", "🎧 Музыка", "🎬 Видео"
     ]))
     async def owner_choose_type(message: Message):
-        if not is_admin(message.from_user.id):
+        if message.from_user.id != OWNER_ID:
             return
         type_key = resolve_type_from_button(message.text)
         if not type_key:
@@ -327,6 +350,7 @@ async def main():
         file = FILES[file_id]
         c = CONTENT_TYPES[file["type"]]
 
+        # Показываем превью
         try:
             if file["type"] in ("article", "poem", "song_text"):
                 await message.answer(file["text"], protect_content=True)
@@ -342,16 +366,18 @@ async def main():
             logger.error(f"Ошибка превью: {e}")
             await message.answer("Ошибка при показе файла.")
 
+        # Показываем цену и кнопку покупки
         await message.answer(
             f"<b>{file['title']}</b>\nТип: {c['title']}\nЦена: {c['price']}⭐",
             reply_markup=buy_buttons(file_id)
         )
 
-    # ---------- Приём текстового контента от админа ----------
+    # ---------- Приём текстового контента от владельца ----------
 
     @dp.message(F.content_type == ContentType.TEXT)
     async def handle_text(message: Message):
-        if is_admin(message.from_user.id) and message.from_user.id in PENDING_TYPE:
+        # если это владелец и у него выбран текстовый тип
+        if message.from_user.id == OWNER_ID and message.from_user.id in PENDING_TYPE:
             type_key = PENDING_TYPE.pop(message.from_user.id)
             if type_key not in ("article", "poem", "song_text"):
                 await message.answer("Ожидался файл, а не текст.")
@@ -361,30 +387,32 @@ async def main():
             FILE_COUNTER += 1
 
             FILES[FILE_COUNTER] = {
-                "owner_id": message.from_user.id,
+                "owner_id": OWNER_ID,
                 "type": type_key,
                 "title": CONTENT_TYPES[type_key]["title"],
                 "text": message.text,
                 "tg_file_id": None,
             }
 
+            link = f"https://t.me/{BOT_USERNAME}?start=file_{FILE_COUNTER}"
             await message.answer(
-                f"{CONTENT_TYPES[type_key]['title']} сохранена.\nID: {FILE_COUNTER}",
+                f"{CONTENT_TYPES[type_key]['title']} сохранена.\nID: {FILE_COUNTER}\nСсылка для публикации:\n{link}",
                 reply_markup=main_menu
             )
             return
 
+        # обычный текст — если не число и не загрузка владельца
         await message.answer(
             "Если хотите купить файл — выберите его номер из списка.",
             reply_markup=main_menu
         )
 
-    # ---------- Приём файлов от админа ----------
+    # ---------- Приём файлов от владельца ----------
 
     @dp.message(F.content_type.in_([ContentType.DOCUMENT, ContentType.VIDEO, ContentType.AUDIO, ContentType.PHOTO]))
     async def handle_files(message: Message):
-        if not is_admin(message.from_user.id):
-            await message.answer("Вы не можете отправлять файлы.")
+        if message.from_user.id != OWNER_ID:
+            await message.answer("Только владелец может отправлять файлы.")
             return
 
         if message.from_user.id not in PENDING_TYPE:
@@ -394,7 +422,7 @@ async def main():
         type_key = PENDING_TYPE.pop(message.from_user.id)
 
         if type_key not in ("image", "music", "video"):
-            await message.answer("Для текстовых типов нужно отправлять текст.")
+            await message.answer("Для текстовых типов нужен текст.")
             return
 
         if message.document:
@@ -417,19 +445,20 @@ async def main():
         FILE_COUNTER += 1
 
         FILES[FILE_COUNTER] = {
-            "owner_id": message.from_user.id,
+            "owner_id": OWNER_ID,
             "type": type_key,
             "title": title,
             "tg_file_id": tg_file_id,
             "text": None,
         }
 
+        link = f"https://t.me/{BOT_USERNAME}?start=file_{FILE_COUNTER}"
         await message.answer(
-            f"Файл сохранён.\nID: {FILE_COUNTER}",
+            f"Файл сохранён.\nID: {FILE_COUNTER}\nСсылка для публикации:\n{link}",
             reply_markup=main_menu
         )
 
-    # ---------- Покупка файла ----------
+    # ---------- Покупка файла (инвойс) ----------
 
     @dp.callback_query(F.data.startswith("buy_"))
     async def cb_buy_file(callback: CallbackQuery):
@@ -448,7 +477,7 @@ async def main():
             title=file["title"],
             description=c["title"],
             payload=f"file_{file_id}",
-            provider_token="",
+            provider_token="",  # <-- вставь provider_token если используешь платежи
             currency="XTR",
             prices=prices,
         )
@@ -474,25 +503,25 @@ async def main():
         c = CONTENT_TYPES[file["type"]]
         price = c["price"]
 
-        owner_id = file["owner_id"]
-        admin_cut = price * ADMIN_PERCENT // 100
-        owner_cut = price - admin_cut
-
-        add_balance(owner_id, admin_cut)
-        add_balance(OWNER_ID, owner_cut)
+        # Начисляем всю сумму владельцу
+        add_balance(OWNER_ID, price)
 
         await message.answer("Оплата получена! Отправляю контент...")
 
-        if file["type"] in ("article", "poem", "song_text"):
-            await message.answer(file["text"], protect_content=True)
-        elif file["type"] == "image":
-            await message.answer_photo(file["tg_file_id"], protect_content=True)
-        elif file["type"] == "music":
-            await message.answer_audio(file["tg_file_id"], protect_content=True)
-        elif file["type"] == "video":
-            await message.answer_video(file["tg_file_id"], protect_content=True)
-        else:
-            await message.answer_document(file["tg_file_id"], protect_content=True)
+        try:
+            if file["type"] in ("article", "poem", "song_text"):
+                await message.answer(file["text"], protect_content=True)
+            elif file["type"] == "image":
+                await message.answer_photo(file["tg_file_id"], protect_content=True)
+            elif file["type"] == "music":
+                await message.answer_audio(file["tg_file_id"], protect_content=True)
+            elif file["type"] == "video":
+                await message.answer_video(file["tg_file_id"], protect_content=True)
+            else:
+                await message.answer_document(file["tg_file_id"], protect_content=True)
+        except Exception as e:
+            logger.error(f"Ошибка отправки контента после оплаты: {e}")
+            await message.answer("Не удалось отправить файл, свяжитесь с владельцем.")
 
     # ---------- Callback: назад в меню ----------
 
@@ -501,6 +530,8 @@ async def main():
         await callback.message.edit_text("Главное меню.")
         await callback.message.answer("Выберите действие:", reply_markup=main_menu)
         await callback.answer()
+
+    # ---------- Запуск ----------
 
     await dp.start_polling(bot)
 
