@@ -137,10 +137,26 @@ async def admin_cat(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(StateFilter(AddProduct.file))
 async def admin_file(message: types.Message, state: FSMContext):
-    f_id = message.photo[-1].file_id if message.photo else (message.audio.file_id if message.audio else (message.video.file_id if message.video else message.document.file_id))
-    if not f_id: return await message.answer("Пришлите именно файл!")
+    f_id = None
+    
+    # Проверяем по очереди все типы контента
+    if message.photo:
+        f_id = message.photo[-1].file_id
+    elif message.audio:
+        f_id = message.audio.file_id
+    elif message.video:
+        f_id = message.video.file_id
+    elif message.document:
+        f_id = message.document.file_id
+    elif message.voice: # На всякий случай добавим голос
+        f_id = message.voice.file_id
+
+    if not f_id:
+        return await message.answer("❌ Я не вижу тут файла. Пожалуйста, пришлите фото, видео, музыку или документ.")
+
+    # Если файл найден, сохраняем и идем дальше
     await state.update_data(file_id=f_id)
-    await message.answer("Введите название:")
+    await message.answer("✅ Файл принят! Теперь введите название товара:")
     await state.set_state(AddProduct.name)
 
 @dp.message(StateFilter(AddProduct.name))
