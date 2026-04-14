@@ -16,15 +16,16 @@ from aiogram.types import (
     LabeledPrice,
     ContentType,
 )
+from aiogram.client.default import DefaultBotProperties
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ================== НАСТРОЙКИ ==================
 
-BOT_TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"  # <-- сюда ВСТАВИШЬ НОВЫЙ ТОКЕН
+BOT_TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"  # <-- сюда ВСТАВЬ НОВЫЙ ТОКЕН
 OWNER_ID = 7770818181
-CHANNEL_ID = -1003349514214  # id группы/канала
+CHANNEL_ID = -1003349514214  # id канала/группы
 
 # Типы контента и цены в Stars
 CONTENT_TYPES = {
@@ -91,19 +92,6 @@ def buy_buttons(file_internal_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def download_button(file_internal_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="⬇️ Скачать",
-                    callback_data=f"download_{file_internal_id}"
-                )
-            ]
-        ]
-    )
-
-
 async def is_subscribed(bot: Bot, user_id: int) -> bool:
     try:
         member = await bot.get_chat_member(CHANNEL_ID, user_id)
@@ -140,7 +128,10 @@ def resolve_type_from_button(text: str) -> str | None:
 
 
 async def main():
-    bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+    bot = Bot(
+        token=BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+    )
     dp = Dispatcher()
 
     # ---------- /start ----------
@@ -171,7 +162,7 @@ async def main():
             "  - Картинка — 5⭐\n"
             "  - Музыка — 10⭐\n"
             "  - Видео — 15⭐\n"
-            "• Сообщения и файлы защищены от пересылки.\n"
+            "• Сообщения и файлы отправляются с защитой от пересылки.\n"
         )
         await message.answer(text, reply_markup=main_menu)
 
@@ -250,22 +241,21 @@ async def main():
                 reply_markup=main_menu
             )
 
-    # ---------- Приём ТЕКСТА от владельца ----------
+    # ---------- Приём ТЕКСТА ----------
 
     @dp.message(F.content_type == ContentType.TEXT)
     async def handle_text(message: Message):
         global FILE_COUNTER
 
-        # если это число — возможно, выбор файла для покупки
+        # Если это число — выбор файла для покупки
         if message.text.isdigit():
             file_internal_id = int(message.text)
             if file_internal_id in FILES:
-                # обработка выбора файла для покупки
-                ctype = CONTENT_TYPES.get(FILES[file_internal_id]["type"], {})
+                file_data = FILES[file_internal_id]
+                ctype = CONTENT_TYPES.get(file_data["type"], {})
                 price = ctype.get("price", 0)
-                title = FILES[file_internal_id]["title"]
                 text = (
-                    f"Вы выбрали: <b>{title}</b>\n"
+                    f"Вы выбрали: <b>{file_data['title']}</b>\n"
                     f"Тип: {ctype.get('title', 'Неизвестно')}\n"
                     f"Цена: {price}⭐\n\n"
                     "Нажмите кнопку ниже, чтобы оплатить."
@@ -273,11 +263,10 @@ async def main():
                 await message.answer(text, reply_markup=buy_buttons(file_internal_id))
                 return
 
-        # если это владелец и есть выбранный тип — сохраняем как текстовый контент
+        # Владелец + выбран текстовый тип
         if message.from_user.id == OWNER_ID and message.from_user.id in PENDING_TYPE:
             type_key = PENDING_TYPE.pop(message.from_user.id)
             if type_key not in ("article", "poem", "song_text"):
-                # тип не текстовый — игнорируем
                 await message.answer(
                     "Ожидался файл, а не текст. Повторите выбор типа.",
                     reply_markup=main_menu
@@ -300,7 +289,6 @@ async def main():
             )
             return
 
-        # обычный текст от пользователя — просто игнор/ответ
         await message.answer(
             "Если хотите купить файл — выберите его номер из списка.",
             reply_markup=main_menu
@@ -432,14 +420,12 @@ async def main():
         await message.answer("Оплата получена! Отправляю контент...")
 
         try:
-            # Текстовые типы
             if ctype_key in ("article", "poem", "song_text"):
                 await message.answer(
                     file_data["text"],
-                    protect_content=True  # защита от пересылки/копирования
+                    protect_content=True
                 )
             else:
-                # Файловые типы
                 if ctype_key == "image":
                     await bot.send_photo(
                         chat_id=message.chat.id,
@@ -462,7 +448,6 @@ async def main():
                         protect_content=True,
                     )
                 else:
-                    # запасной вариант — документ
                     await bot.send_document(
                         chat_id=message.chat.id,
                         document=file_data["tg_file_id"],
