@@ -19,7 +19,7 @@ PRICES = {
 }
 
 ADMINS = [7770818181]
-CHANNEL_ID = -1003349514214   # твой канал
+CHANNEL_ID = -1003349514214
 
 # ============================================================
 
@@ -47,16 +47,16 @@ conn.commit()
 def get_price(file_type: str) -> int:
     return PRICES.get(file_type, 10)
 
-# =================== ДИАГНОСТИКА + ОБРАБОТКА ===================
-@router.message(F.chat.id == CHANNEL_ID)
+# =================== ОБРАБОТКА ПОСТОВ В КАНАЛЕ ===================
+@router.channel_post(F.chat.id == CHANNEL_ID)
 async def handle_channel_post(message: Message):
-    print(f"📨 Вижу пост в канале! ID сообщения: {message.message_id} | Есть медиа: {bool(message.photo or message.video or message.document or message.audio or message.voice)}")
+    print(f"📨 Вижу пост в канале! ID: {message.message_id} | Тип: {message.content_type}")
 
     if not (message.photo or message.video or message.document or message.audio or message.voice):
-        print("   → Это не медиа, пропускаем")
+        print("   → Не медиа, пропускаем")
         return
 
-    # Определяем тип
+    # Определяем тип и file_id
     if message.photo:
         file_type = "photo"
         file_id = message.photo[-1].file_id
@@ -73,16 +73,19 @@ async def handle_channel_post(message: Message):
         file_type = "voice"
         file_id = message.voice.file_id
     else:
-        print("   → Неизвестный тип медиа")
+        print("   → Неизвестный тип")
         return
 
-    print(f"   → Обнаружено медиа: {file_type} | file_id: {file_id[:20]}...")
+    print(f"   → Медиа найдено: {file_type}")
 
     price = get_price(file_type)
     original_caption = message.caption or ""
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text=f"💎 Скачать за {price} Stars", callback_data=f"buy_{file_type}_{file_id}_{price}")
+        InlineKeyboardButton(
+            text=f"💎 Скачать за {price} Stars",
+            callback_data=f"buy_{file_type}_{file_id}_{price}"
+        )
     ]])
 
     new_caption = f"{original_caption}\n\n📸 {file_type.capitalize()} • Скачать за {price} Stars"
@@ -94,9 +97,10 @@ async def handle_channel_post(message: Message):
             caption=new_caption,
             reply_markup=keyboard
         )
-        print(f"   ✅ Успешно отредактировал пост {message.message_id}")
+        print(f"   ✅ Кнопка добавлена успешно!")
     except Exception as e:
-        print(f"   ❌ Не удалось отредактировать: {e}")
+        print(f"   ❌ Ошибка редактирования: {e}")
+        # Запасной вариант — текст под постом
         try:
             await bot.send_message(
                 chat_id=message.chat.id,
@@ -104,7 +108,7 @@ async def handle_channel_post(message: Message):
                 reply_to_message_id=message.message_id,
                 reply_markup=keyboard
             )
-            print("   ✅ Добавил текст под постом")
+            print("   ✅ Добавлен текст под постом")
         except Exception as e2:
             print(f"   ❌ Полная ошибка: {e2}")
 
