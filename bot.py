@@ -10,12 +10,14 @@ from aiogram.types import (
     PreCheckoutQuery,
 )
 
+# ---------------------- НАСТРОЙКИ ----------------------
+
 TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 router = Router()
 
 DB_FILE = "db.json"
-TRACK_PRICE = 5          # цена за трек в звёздах
+TRACK_PRICE = 5          # цена за единицу медиа в звёздах
 REF_PERCENT = 0.20       # 20% реферальный бонус
 
 
@@ -72,15 +74,30 @@ def add_ref_bonus(buyer_id, price):
         save_db(db)
 
 
-# ---------------------- ЛОВИМ МУЗЫКУ В ГРУППЕ ----------------------
+# ---------------------- ЛОВИМ МЕДИА В ГРУППЕ ----------------------
 
-@router.message(F.chat.type.in_({"group", "supergroup"}) & F.audio)
-async def catch_music(message: types.Message):
-    file_id = message.audio.file_id
-    title = message.audio.title or "Без названия"
+@router.message(
+    F.chat.type.in_({"group", "supergroup"})
+    & (F.audio | F.photo | F.video | F.document)
+)
+async def catch_media(message: types.Message):
+    if message.audio:
+        file_id = message.audio.file_id
+        title = message.audio.title or "Аудио"
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        title = "Фото"
+    elif message.video:
+        file_id = message.video.file_id
+        title = "Видео"
+    elif message.document:
+        file_id = message.document.file_id
+        title = message.document.file_name or "Документ"
+    else:
+        return
 
     add_track(file_id, title)
-    await message.reply("🎵 Музыка добавлена в магазин!")
+    await message.reply(f"📥 {title} добавлено в магазин!")
 
 
 # ---------------------- СТАРТ + РЕФЕРАЛКА ----------------------
@@ -95,7 +112,7 @@ async def start_cmd(message: types.Message):
             set_referral(message.from_user.id, ref_id)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎧 Музыка", callback_data="open_shop")],
+        [InlineKeyboardButton(text="🎧 Медиа магазин", callback_data="open_shop")],
         [InlineKeyboardButton(text="👥 Реферальная ссылка", callback_data="ref_link")],
     ])
 
@@ -109,7 +126,7 @@ async def open_shop(callback: types.CallbackQuery):
     tracks = get_tracks()
 
     if not tracks:
-        await callback.message.answer("Пока нет музыки.")
+        await callback.message.answer("Пока нет медиа в магазине.")
         return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -120,7 +137,7 @@ async def open_shop(callback: types.CallbackQuery):
         for t in tracks
     ])
 
-    await callback.message.answer("🎧 Выберите трек:", reply_markup=kb)
+    await callback.message.answer("🎧 Выберите медиа:", reply_markup=kb)
 
 
 # ---------------------- ОПЛАТА ----------------------
@@ -130,13 +147,13 @@ async def buy_track(callback: types.CallbackQuery):
     track_id = int(callback.data.replace("buy_", ""))
     item = get_track(track_id)
     if not item:
-        await callback.message.answer("Трек не найден.")
+        await callback.message.answer("Медиа не найдено.")
         return
 
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title=item["title"],
-        description="Покупка музыкального трека",
+        description="Покупка медиа",
         payload=str(track_id),
         provider_token="",  # для звёзд не нужен
         currency="XTR",
@@ -154,7 +171,7 @@ async def successful_payment(message: types.Message):
     track_id = int(message.successful_payment.invoice_payload)
     item = get_track(track_id)
     if not item:
-        await message.answer("Трек не найден.")
+        await message.answer("Медиа не найдено.")
         return
 
     add_ref_bonus(message.from_user.id, item["price"])
