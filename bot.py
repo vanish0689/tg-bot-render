@@ -10,7 +10,7 @@ import sqlite3
 # ========================= НАСТРОЙКИ =========================
 BOT_TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"
 
-# Цены в Stars (меняй здесь, если захочешь)
+# Цены по типам медиа (меняй здесь как хочешь)
 PRICES = {
     "photo": 5,
     "video": 15,
@@ -19,23 +19,23 @@ PRICES = {
     "voice": 8,
 }
 
-# Твой Telegram ID
 ADMINS = [7770818181]
+
+# Твой канал (уже вставлен)
+CHANNEL_ID = -1003349514214
 
 # ============================================================
 
 bot = Bot(
     token=BOT_TOKEN,
-    default=DefaultBotProperties(
-        parse_mode=ParseMode.HTML
-    )
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# База данных для хранения продаж
+# База данных
 conn = sqlite3.connect("media_bot.db", check_same_thread=False)
 cur = conn.cursor()
 cur.execute("""CREATE TABLE IF NOT EXISTS payments (
@@ -51,68 +51,61 @@ conn.commit()
 def get_price(file_type: str) -> int:
     return PRICES.get(file_type, 10)
 
-# =================== ОБРАБОТКА МЕДИА В ГРУППЕ ===================
-@router.message(F.chat.type.in_({"group", "supergroup"}))
-async def handle_media(message: Message):
-    if not message.media_group_id and (message.photo or message.video or message.document or message.audio or message.voice):
-        file_type = None
-        file_id = None
-        caption = message.caption or ""
+# =================== РЕАКЦИЯ НА ПОСТЫ В КАНАЛЕ ===================
+@router.message(F.chat.id == CHANNEL_ID)
+async def handle_channel_post(message: Message):
+    if not (message.photo or message.video or message.document or message.audio or message.voice):
+        return
 
-        if message.photo:
-            file_type = "photo"
-            file_id = message.photo[-1].file_id
-        elif message.video:
-            file_type = "video"
-            file_id = message.video.file_id
-        elif message.document:
-            file_type = "document"
-            file_id = message.document.file_id
-        elif message.audio:
-            file_type = "audio"
-            file_id = message.audio.file_id
-        elif message.voice:
-            file_type = "voice"
-            file_id = message.voice.file_id
+    # Определяем тип и file_id
+    if message.photo:
+        file_type = "photo"
+        file_id = message.photo[-1].file_id
+    elif message.video:
+        file_type = "video"
+        file_id = message.video.file_id
+    elif message.document:
+        file_type = "document"
+        file_id = message.document.file_id
+    elif message.audio:
+        file_type = "audio"
+        file_id = message.audio.file_id
+    elif message.voice:
+        file_type = "voice"
+        file_id = message.voice.file_id
+    else:
+        return
 
-        if not file_type or not file_id:
-            return
+    price = get_price(file_type)
+    original_caption = message.caption or ""
 
-        price = get_price(file_type)
+    # Кнопка оплаты
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text=f"💎 Скачать за {price} Stars",
+            callback_data=f"buy_{file_type}_{file_id}_{price}"
+        )
+    ]])
 
-        # Удаляем оригинал, чтобы не скачали бесплатно
-        await bot.delete_message(message.chat.id, message.message_id)
+    # Новая подпись
+    new_caption = f"{original_caption}\n\n📸 {file_type.capitalize()} • Скачать за {price} Stars"
 
-        # Кнопка оплаты
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(
-                text=f"💎 Скачать за {price} Stars",
-                callback_data=f"buy_{file_type}_{file_id}_{price}"
-            )
-        ]])
-
-        # Превью с кнопкой
-        if file_type == "photo":
-            await bot.send_photo(
-                chat_id=message.chat.id,
-                photo=file_id,
-                caption=f"📸 Фото • Скачать за {price} Stars\n\n{caption}",
-                reply_markup=keyboard
-            )
-        elif file_type == "video":
-            await bot.send_video(
-                chat_id=message.chat.id,
-                video=file_id,
-                caption=f"🎥 Видео • Скачать за {price} Stars\n\n{caption}",
-                reply_markup=keyboard
-            )
-        else:
-            await bot.send_document(
-                chat_id=message.chat.id,
-                document=file_id,
-                caption=f"📄 Файл ({file_type}) • Скачать за {price} Stars\n\n{caption}",
-                reply_markup=keyboard
-            )
+    try:
+        # Пытаемся отредактировать подпись и добавить кнопку
+        await bot.edit_message_caption(
+            chat_id=message.chat.id,
+            message_id=message.message_id,
+            caption=new_caption,
+            reply_markup=keyboard
+        )
+    except:
+        # Если не получилось (например, пост без подписи), добавляем текст под постом
+        await bot.send_message(
+            chat_id=message.chat.id,
+            text=new_caption,
+            reply_to_message_id=message.message_id,
+            reply_markup=keyboard
+        )
 
 # =================== ОПЛАТА ===================
 @router.callback_query(F.data.startswith("buy_"))
@@ -147,12 +140,12 @@ async def successful_payment(message: Message):
         await message.answer("Ошибка при отправке файла 😔")
         return
 
-    # Записываем продажу
+    # Сохраняем продажу
     cur.execute("INSERT INTO payments (user_id, file_id, file_type, price, charge_id) VALUES (?, ?, ?, ?, ?)",
                 (message.from_user.id, file_id, file_type, payment.total_amount, payment.telegram_payment_charge_id))
     conn.commit()
 
-    # Отправляем файл в личку
+    # Отправляем полный файл в ЛС
     try:
         if file_type == "photo":
             await bot.send_photo(message.from_user.id, file_id, caption="✅ Вот твой полный файл. Спасибо!")
@@ -163,19 +156,19 @@ async def successful_payment(message: Message):
     except:
         await message.answer("Не удалось отправить файл. Напиши мне напрямую.")
 
-# =================== АДМИН-КОМАНДА ===================
+# =================== АДМИН ===================
 @router.message(Command("stats"))
 async def stats(message: Message):
     if message.from_user.id not in ADMINS:
         return
     cur.execute("SELECT COUNT(*) as total, SUM(price) as earned FROM payments")
     row = cur.fetchone()
-    await message.answer(f"📊 Статистика бота:\n\nПродаж всего: {row[0]}\nЗаработано Stars: {row[1] or 0}")
+    await message.answer(f"📊 Статистика бота:\n\nПродаж: {row[0]}\nЗаработано Stars: {row[1] or 0}")
 
 # =================== ЗАПУСК ===================
 async def main():
     logging.basicConfig(level=logging.INFO)
-    print("🚀 Бот bot.py запущен и готов к работе...")
+    print("🚀 Бот для канала @Kastle202589 запущен...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
