@@ -16,20 +16,12 @@ TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 router = Router()
 
-# Пока ставим None — позже заменим на реальный ID
-GROUP_ID = None  
+# ТВОЯ ГРУППА
+GROUP_ID = -3349514214
 
 DB_FILE = "db.json"
 TRACK_PRICE = 5
 REF_PERCENT = 0.20
-
-
-# ---------------------- ВРЕМЕННЫЙ ХЕНДЛЕР ДЛЯ ПОЛУЧЕНИЯ ID ----------------------
-
-@router.message()
-async def debug_chat_id(message: types.Message):
-    await message.answer(f"Chat ID: {message.chat.id}")
-    print("GROUP ID:", message.chat.id)
 
 
 # ---------------------- БАЗА ДАННЫХ ----------------------
@@ -85,7 +77,7 @@ def add_ref_bonus(buyer_id, price):
         save_db(db)
 
 
-# ---------------------- ЛОВИМ МЕДИА ----------------------
+# ---------------------- ЛОВИМ МЕДИА ТОЛЬКО В ТВОЕЙ ГРУППЕ ----------------------
 
 @router.message(
     (F.chat.id == GROUP_ID)
