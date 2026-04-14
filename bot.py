@@ -16,11 +16,20 @@ TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 router = Router()
 
-GROUP_USERNAME = "Kastle202589"   # ← твоя группа
+# Пока ставим None — позже заменим на реальный ID
+GROUP_ID = None  
 
 DB_FILE = "db.json"
 TRACK_PRICE = 5
 REF_PERCENT = 0.20
+
+
+# ---------------------- ВРЕМЕННЫЙ ХЕНДЛЕР ДЛЯ ПОЛУЧЕНИЯ ID ----------------------
+
+@router.message()
+async def debug_chat_id(message: types.Message):
+    await message.answer(f"Chat ID: {message.chat.id}")
+    print("GROUP ID:", message.chat.id)
 
 
 # ---------------------- БАЗА ДАННЫХ ----------------------
@@ -76,33 +85,48 @@ def add_ref_bonus(buyer_id, price):
         save_db(db)
 
 
-# ---------------------- ЛОВИМ МЕДИА ТОЛЬКО В ТВОЕЙ ГРУППЕ ----------------------
+# ---------------------- ЛОВИМ МЕДИА ----------------------
 
 @router.message(
-    (F.chat.username == GROUP_USERNAME)
-    & (F.audio | F.photo | F.video | F.document)
+    (F.chat.id == GROUP_ID)
+    & (F.audio | F.photo | F.video | F.document | F.voice | F.video_note)
 )
 async def catch_media(message: types.Message):
+    file_id = None
+    title = "Медиа"
+
     if message.audio:
         file_id = message.audio.file_id
-        title = message.audio.title or "Аудио"
-    elif message.photo:
-        file_id = message.photo[-1].file_id
-        title = "Фото"
-    elif message.video:
-        file_id = message.video.file_id
-        title = "Видео"
+        title = message.audio.title or message.audio.file_name or "Аудио"
+
     elif message.document:
         file_id = message.document.file_id
         title = message.document.file_name or "Документ"
-    else:
+
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        title = "Фото"
+
+    elif message.video:
+        file_id = message.video.file_id
+        title = "Видео"
+
+    elif message.voice:
+        file_id = message.voice.file_id
+        title = "Голосовое"
+
+    elif message.video_note:
+        file_id = message.video_note.file_id
+        title = "Видеосообщение"
+
+    if not file_id:
         return
 
     add_track(file_id, title)
-    await message.reply(f"📥 {title} добавлено в магазин!")
+    await message.reply(f"✅ Добавлено в магазин: {title}")
 
 
-# ---------------------- СТАРТ + РЕФЕРАЛКА ----------------------
+# ---------------------- СТАРТ ----------------------
 
 @router.message(Command("start"))
 async def start_cmd(message: types.Message):
@@ -114,7 +138,7 @@ async def start_cmd(message: types.Message):
             set_referral(message.from_user.id, ref_id)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎧 Медиа магазин", callback_data="open_shop")],
+        [InlineKeyboardButton(text="🎧 Магазин", callback_data="open_shop")],
         [InlineKeyboardButton(text="👥 Реферальная ссылка", callback_data="ref_link")],
     ])
 
@@ -157,7 +181,7 @@ async def buy_track(callback: types.CallbackQuery):
         title=item["title"],
         description="Покупка медиа",
         payload=str(track_id),
-        provider_token="",  # для звёзд не нужен
+        provider_token="",
         currency="XTR",
         prices=[LabeledPrice(label=item["title"], amount=item["price"])],
     )
