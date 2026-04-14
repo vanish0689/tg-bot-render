@@ -24,25 +24,23 @@ logger = logging.getLogger(__name__)
 
 # ================== НАСТРОЙКИ ==================
 
-BOT_TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"  # <-- ВСТАВЬ СВОЙ НОВЫЙ ТОКЕН
-BOT_USERNAME = "YourBotUsername"   # <-- ВСТАВЬ username бота без @
+BOT_TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"   # <-- ВСТАВЬ СВОЙ ТОКЕН
+BOT_USERNAME = "YourBotUsername"    # <-- ВСТАВЬ username бота без @
 
 OWNER_ID = 7770818181
 CHANNEL_ID = -1003349514214
 CHANNEL_URL = "https://t.me/Kastle202589"
 
-# Проценты распределения
-ADMIN_PERCENT = 80  # админ файла
-OWNER_PERCENT = 20  # владелец бота
+ADMIN_PERCENT = 80   # доля админа
+OWNER_PERCENT = 20   # доля владельца
 
-# Типы контента и цены в Stars
 CONTENT_TYPES = {
-    "article": {"title": "Статья", "price": 1},
-    "poem": {"title": "Стихотворение", "price": 3},
-    "song_text": {"title": "Текст песни", "price": 5},
-    "image": {"title": "Картинка", "price": 5},
-    "music": {"title": "Музыка", "price": 10},
-    "video": {"title": "Видео", "price": 15},
+    "article":   {"title": "Статья",       "price": 1},
+    "poem":      {"title": "Стихотворение","price": 3},
+    "song_text": {"title": "Текст песни",  "price": 5},
+    "image":     {"title": "Картинка",     "price": 5},
+    "music":     {"title": "Музыка",       "price": 10},
+    "video":     {"title": "Видео",        "price": 15},
 }
 
 # ================== ХРАНИЛИЩЕ ==================
@@ -108,8 +106,7 @@ def get_file_list_text() -> str:
     lines = ["Доступные файлы:"]
     for fid, data in FILES.items():
         c = CONTENT_TYPES[data["type"]]
-        owner_mark = " (ваш)" if data["owner_id"] == OWNER_ID else ""
-        lines.append(f"{fid}. {data['title']} ({c['title']}, {c['price']}⭐){owner_mark}")
+        lines.append(f"{fid}. {data['title']} ({c['title']}, {c['price']}⭐)")
     return "\n".join(lines)
 
 
@@ -142,12 +139,10 @@ async def main():
 
     @dp.message(CommandStart())
     async def cmd_start(message: Message):
-        # разбор deep-link аргумента
         text = message.text or ""
         parts = text.split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
 
-        # обработка реф-ссылки админа
         if args.startswith("admin_"):
             token = args.replace("admin_", "")
             if token in ADMIN_TOKENS:
@@ -156,7 +151,6 @@ async def main():
                 await message.answer("Вы назначены администратором бота.")
             else:
                 await message.answer("Недействительная или уже использованная ссылка.")
-            # после этого продолжаем обычный старт
 
         subscribed = await is_subscribed(bot, message.from_user.id)
 
@@ -196,18 +190,21 @@ async def main():
             return False
         return True
 
-    # ---------- Команды владельца: реф-ссылки и статистика ----------
+    # ---------- /myref для всех админов ----------
 
-    @dp.message(Command("get_admin_link"))
-    async def get_admin_link(message: Message):
-        if message.from_user.id != OWNER_ID:
+    @dp.message(Command("myref"))
+    async def myref(message: Message):
+        if not is_admin(message.from_user.id):
+            await message.answer("Эта команда доступна только администраторам.")
             return
 
         token = secrets.token_urlsafe(8)
         ADMIN_TOKENS[token] = message.from_user.id
 
         link = f"https://t.me/{BOT_USERNAME}?start=admin_{token}"
-        await message.answer(f"Реферальная ссылка для нового админа:\n{link}")
+        await message.answer(f"Ваша реферальная ссылка для нового админа:\n{link}")
+
+    # ---------- Балансы и статистика ----------
 
     @dp.message(Command("balance"))
     async def cmd_balance(message: Message):
@@ -238,17 +235,16 @@ async def main():
             await message.answer("Недостаточно средств или неверная сумма.")
             return
 
-        # Уведомляем владельца, но баланс пока не трогаем (ручное подтверждение)
         text = (
             f"Запрос на вывод:\n"
             f"Пользователь: {message.from_user.id}\n"
-            f"Сумма: {amount}⭐\n\n"
+            f"Сумма: {amount}⭐\n"
             f"Текущий баланс: {bal}⭐"
         )
         try:
             await bot.send_message(OWNER_ID, text)
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Не удалось отправить запрос владельцу: {e}")
 
         await message.answer("Запрос на вывод отправлен владельцу. Ожидайте подтверждения.")
 
@@ -331,7 +327,6 @@ async def main():
         file = FILES[file_id]
         c = CONTENT_TYPES[file["type"]]
 
-        # Показываем превью
         try:
             if file["type"] in ("article", "poem", "song_text"):
                 await message.answer(file["text"], protect_content=True)
@@ -347,7 +342,6 @@ async def main():
             logger.error(f"Ошибка превью: {e}")
             await message.answer("Ошибка при показе файла.")
 
-        # Показываем цену
         await message.answer(
             f"<b>{file['title']}</b>\nТип: {c['title']}\nЦена: {c['price']}⭐",
             reply_markup=buy_buttons(file_id)
@@ -357,7 +351,6 @@ async def main():
 
     @dp.message(F.content_type == ContentType.TEXT)
     async def handle_text(message: Message):
-        # если это админ и у него выбран текстовый тип
         if is_admin(message.from_user.id) and message.from_user.id in PENDING_TYPE:
             type_key = PENDING_TYPE.pop(message.from_user.id)
             if type_key not in ("article", "poem", "song_text"):
@@ -381,7 +374,6 @@ async def main():
             )
             return
 
-        # обычный текст — если не число и не админский ввод
         await message.answer(
             "Если хотите купить файл — выберите его номер из списка.",
             reply_markup=main_menu
@@ -482,7 +474,6 @@ async def main():
         c = CONTENT_TYPES[file["type"]]
         price = c["price"]
 
-        # распределение дохода
         owner_id = file["owner_id"]
         admin_cut = price * ADMIN_PERCENT // 100
         owner_cut = price - admin_cut
@@ -510,8 +501,6 @@ async def main():
         await callback.message.edit_text("Главное меню.")
         await callback.message.answer("Выберите действие:", reply_markup=main_menu)
         await callback.answer()
-
-    # ---------- Запуск ----------
 
     await dp.start_polling(bot)
 
