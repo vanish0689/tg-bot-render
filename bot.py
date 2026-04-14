@@ -17,7 +17,7 @@ bot = Bot(token=TOKEN)
 router = Router()
 
 # ТВОЯ ГРУППА
-GROUP_ID = -3349514214
+GROUP_ID = -7770818181
 
 DB_FILE = "db.json"
 TRACK_PRICE = 5
@@ -92,7 +92,7 @@ async def catch_media(message: types.Message):
         title = message.audio.title or message.audio.file_name or "Аудио"
 
     elif message.document:
-        file_id = message.document.file_id
+        file_id = message.document.file.file_id
         title = message.document.file_name or "Документ"
 
     elif message.photo:
