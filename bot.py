@@ -71,7 +71,7 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
         amount INTEGER NOT NULL,
-        status TEXT NOT NULL, -- pending, approved, declined
+        status TEXT NOT NULL,
         created_at INTEGER,
         processed_by INTEGER,
         processed_at INTEGER,
@@ -83,7 +83,7 @@ def init_db():
 
 DB = init_db()
 
-def db_add_file(owner_id: int, type_key: str, title: str, tg_file_id: Optional[str], text_content: Optional[str]) -> int:
+def db_add_file(owner_id: int, type_key: str, title: Optional[str], tg_file_id: Optional[str], text_content: Optional[str]) -> int:
     cur = DB.cursor()
     cur.execute(
         "INSERT INTO files (owner_id, type, title, tg_file_id, text_content, created_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -91,6 +91,11 @@ def db_add_file(owner_id: int, type_key: str, title: str, tg_file_id: Optional[s
     )
     DB.commit()
     return cur.lastrowid
+
+def db_update_file_title(file_id: int, new_title: str):
+    cur = DB.cursor()
+    cur.execute("UPDATE files SET title = ? WHERE id = ?", (new_title, file_id))
+    DB.commit()
 
 def db_get_file(file_id: int) -> Optional[Dict[str, Any]]:
     cur = DB.cursor()
@@ -124,8 +129,11 @@ def db_get_balance(user_id: int) -> int:
 
 def db_add_balance(user_id: int, amount: int):
     cur = DB.cursor()
-    cur.execute("INSERT INTO balances(user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?",
-                (user_id, amount, amount))
+    # UPSERT: добавляем или увеличиваем баланс
+    cur.execute(
+        "INSERT INTO balances(user_id, balance) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET balance = balance + ?",
+        (user_id, amount, amount)
+    )
     DB.commit()
 
 def db_create_withdraw_request(user_id: int, amount: int) -> int:
@@ -256,7 +264,7 @@ async def main():
                 await message.answer("Чтобы получить доступ к файлу, подпишитесь на канал:", reply_markup=subscribe_kb)
                 return
 
-            # Показываем превью и кнопку покупки
+            # Показываем превью и кнопку покупки (превью защищено)
             c = CONTENT_TYPES[file["type"]]
             try:
                 if file["type"] in ("article", "poem", "song_text"):
@@ -448,7 +456,7 @@ async def main():
             "• Только владелец может загружать файлы.\n"
             "• Перед загрузкой выбирается тип (статья, текст песни, стих, картинка, музыка, видео).\n"
             "• Цена зависит от типа.\n"
-            "• Все сообщения и файлы защищены от пересылки.\n"
+            "• Все превью защищены от пересылки.\n"
             "• После загрузки бот выдаёт ссылку для публикации в канале.",
             reply_markup=main_menu
         )
@@ -510,51 +518,85 @@ async def main():
             await message.answer("Ошибка при показе файла.")
         await message.answer(f"<b>{file['title']}</b>\nТип: {c['title']}\nЦена: {c['price']}⭐", reply_markup=buy_buttons(file_id))
 
-    # Приём текстового контента от владельца
-    @dp.message(F.content_type == ContentType.TEXT)
+    # Общий текстовый обработчик — не перехватывает команды и номера
+    @dp.message(
+        F.content_type == ContentType.TEXT
+        & ~F.text.regexp(r"^/")
+        & ~F.text.regexp(r"^\d+$")
+    )
     async def handle_text(message: Message):
+        # если это владелец отправляет текст в режиме загрузки (текстовые типы)
         if message.from_user.id == OWNER_ID and message.from_user.id in PENDING_TYPE:
             type_key = PENDING_TYPE.pop(message.from_user.id)
             if type_key not in ("article", "poem", "song_text"):
                 await message.answer("Ожидался файл, а не текст.")
                 return
             fid = db_add_file(OWNER_ID, type_key, CONTENT_TYPES[type_key]["title"], None, message.text)
+            # title уже установлен как заголовок типа
             link = f"https://t.me/{BOT_USERNAME}?start=file_{fid}"
             await message.answer(f"{CONTENT_TYPES[type_key]['title']} сохранена.\nID: {fid}\nСсылка для публикации:\n{link}", reply_markup=main_menu)
             return
+
+        # Обычный текст от пользователя
         await message.answer("Если хотите купить файл — выберите его номер из списка.", reply_markup=main_menu)
 
-    # Приём файлов от владельца
+    # Приём файлов от владельца (с автоматическим именованием)
     @dp.message(F.content_type.in_([ContentType.DOCUMENT, ContentType.VIDEO, ContentType.AUDIO, ContentType.PHOTO]))
     async def handle_files(message: Message):
         if message.from_user.id != OWNER_ID:
             await message.answer("Только владелец может отправлять файлы.")
             return
+
         if message.from_user.id not in PENDING_TYPE:
             await message.answer("Сначала выберите тип через «📤 Отправить файл».")
             return
+
         type_key = PENDING_TYPE.pop(message.from_user.id)
+
         if type_key not in ("image", "music", "video"):
             await message.answer("Для текстовых типов нужен текст.")
             return
+
+        # Получаем tg_file_id и исходное имя (если есть)
+        tg_file_id = None
+        orig_name = None
+
         if message.document:
             tg_file_id = message.document.file_id
-            title = message.document.file_name or CONTENT_TYPES[type_key]["title"]
+            orig_name = message.document.file_name
         elif message.video:
             tg_file_id = message.video.file_id
-            title = "Видео"
+            orig_name = getattr(message.video, "file_name", None)
         elif message.audio:
             tg_file_id = message.audio.file_id
-            title = "Музыка"
+            orig_name = getattr(message.audio, "file_name", None)
         elif message.photo:
             tg_file_id = message.photo[-1].file_id
-            title = "Картинка"
+            orig_name = None
         else:
             await message.answer("Неизвестный тип файла.")
             return
-        fid = db_add_file(OWNER_ID, type_key, title, tg_file_id, None)
+
+        # Сохраняем запись в БД с временным title (чтобы получить id)
+        temp_title = ""
+        fid = db_add_file(OWNER_ID, type_key, temp_title, tg_file_id, None)
+
+        # Формируем финальное имя
+        final_title = None
+        if type_key == "image":
+            final_title = f"{fid}.jpg"
+        elif type_key == "video":
+            final_title = orig_name or f"{fid}.mp4"
+        elif type_key == "music":
+            final_title = orig_name or f"{fid}.mp3"
+        else:
+            final_title = orig_name or f"{fid}.dat"
+
+        # Обновляем title в БД
+        db_update_file_title(fid, final_title)
+
         link = f"https://t.me/{BOT_USERNAME}?start=file_{fid}"
-        await message.answer(f"Файл сохранён.\nID: {fid}\nСсылка для публикации:\n{link}", reply_markup=main_menu)
+        await message.answer(f"Файл сохранён.\nID: {fid}\nИмя файла: {final_title}\nСсылка для публикации:\n{link}", reply_markup=main_menu)
 
     # Покупка файла (инвойс)
     @dp.callback_query(F.data.startswith("buy_"))
@@ -565,10 +607,10 @@ async def main():
             await callback.answer("Файл не найден.", show_alert=True)
             return
         c = CONTENT_TYPES[file["type"]]
-        prices = [LabeledPrice(label=file["title"], amount=c["price"])]
+        prices = [LabeledPrice(label=file["title"] or file["type"], amount=c["price"])]
         await bot.send_invoice(
             chat_id=callback.from_user.id,
-            title=file["title"],
+            title=file["title"] or file["type"],
             description=c["title"],
             payload=f"file_{file_id}",
             provider_token="",  # <-- вставь provider_token если используешь платежи
@@ -581,39 +623,43 @@ async def main():
     async def process_pre_checkout_query(pre_checkout_query: PreCheckoutQuery):
         await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
-    # Успешная оплата — фиксируем и отправляем файл
+    # Успешная оплата — фиксируем и отправляем файл как скачиваемый документ
     @dp.message(F.content_type == ContentType.SUCCESSFUL_PAYMENT)
     async def successful_payment_handler(message: Message):
         payload = message.successful_payment.invoice_payload
         if not payload.startswith("file_"):
             return
+
         try:
             file_id = int(payload.split("_")[1])
         except:
             await message.answer("Неверный payload.")
             return
+
         file = db_get_file(file_id)
         if not file:
             await message.answer("Файл не найден.")
             return
+
         price = CONTENT_TYPES[file["type"]]["price"]
         # Начисляем всю сумму владельцу
         db_add_balance(OWNER_ID, price)
-        await message.answer("Оплата получена! Отправляю контент...")
+
+        await message.answer("Оплата получена! Готовлю файл для скачивания...")
+
         try:
+            # Текстовые типы — отправляем как обычный текст
             if file["type"] in ("article", "poem", "song_text"):
-                await message.answer(file["text"], protect_content=True)
-            elif file["type"] == "image":
-                await message.answer_photo(file["tg_file_id"], protect_content=True)
-            elif file["type"] == "music":
-                await message.answer_audio(file["tg_file_id"], protect_content=True)
-            elif file["type"] == "video":
-                await message.answer_video(file["tg_file_id"], protect_content=True)
-            else:
-                await message.answer_document(file["tg_file_id"], protect_content=True)
+                await message.answer(file["text"])
+                return
+
+            # Для медиа: отправляем как документ, чтобы клиент предлагал скачать файл
+            # Используем file['tg_file_id'] напрямую — Telegram обычно сохраняет имя, если оно было задано при загрузке
+            await message.answer_document(file["tg_file_id"], caption=file.get("title", None))
+
         except Exception as e:
             logger.error(f"Ошибка отправки контента после оплаты: {e}")
-            await message.answer("Не удалось отправить файл, свяжитесь с владельцем.")
+            await message.answer("Не удалось отправить файл автоматически. Свяжитесь с владельцем.")
 
     # Callback: назад в меню
     @dp.callback_query(F.data == "back_to_menu")
