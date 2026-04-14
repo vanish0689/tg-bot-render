@@ -1,14 +1,16 @@
 import asyncio
 import logging
+import sqlite3
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
+from aiogram.types import (Message, CallbackQuery, InlineKeyboardMarkup, 
+                           InlineKeyboardButton, LabeledPrice, PreCheckoutQuery)
 from aiogram.filters import Command
-import sqlite3
 
 # ========================= НАСТРОЙКИ =========================
-BOT_TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"
+# ВНИМАНИЕ: Замени на новый токен, старый нужно аннулировать!
+BOT_TOKEN = "ТВОЙ_НОВЫЙ_ТОКЕН" 
 
 PRICES = {
     "photo": 5,
@@ -20,7 +22,6 @@ PRICES = {
 
 ADMINS = [7770818181]
 CHANNEL_ID = -1003349514214
-
 # ============================================================
 
 bot = Bot(
@@ -32,8 +33,11 @@ dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
+# Подключение к БД
 conn = sqlite3.connect("media_bot.db", check_same_thread=False)
 cur = conn.cursor()
+
+# Таблица платежей
 cur.execute("""CREATE TABLE IF NOT EXISTS payments (
                 id INTEGER PRIMARY KEY,
                 user_id INTEGER,
@@ -42,6 +46,13 @@ cur.execute("""CREATE TABLE IF NOT EXISTS payments (
                 price INTEGER,
                 charge_id TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+
+# Таблица для временного хранения инфо о файлах (чтобы callback_data был коротким)
+cur.execute("""CREATE TABLE IF NOT EXISTS items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id TEXT,
+                file_type TEXT,
+                price INTEGER)""")
 conn.commit()
 
 def get_price(file_type: str) -> int:
@@ -50,13 +61,13 @@ def get_price(file_type: str) -> int:
 # =================== ОБРАБОТКА ПОСТОВ В КАНАЛЕ ===================
 @router.channel_post(F.chat.id == CHANNEL_ID)
 async def handle_channel_post(message: Message):
-    print(f"📨 Вижу пост в канале! ID: {message.message_id} | Тип: {message.content_type}")
-
     if not (message.photo or message.video or message.document or message.audio or message.voice):
-        print("   → Не медиа, пропускаем")
         return
 
     # Определяем тип и file_id
+    file_id = None
+    file_type = None
+
     if message.photo:
         file_type = "photo"
         file_id = message.photo[-1].file_id
@@ -72,23 +83,28 @@ async def handle_channel_post(message: Message):
     elif message.voice:
         file_type = "voice"
         file_id = message.voice.file_id
-    else:
-        print("   → Неизвестный тип")
+
+    if not file_id:
         return
 
-    print(f"   → Медиа найдено: {file_type}")
-
     price = get_price(file_type)
-    original_caption = message.caption or ""
+    
+    # СОХРАНЯЕМ В БД для сокращения callback_data
+    cur.execute("INSERT INTO items (file_id, file_type, price) VALUES (?, ?, ?)", 
+                (file_id, file_type, price))
+    conn.commit()
+    item_id = cur.lastrowid 
 
+    # Кнопка теперь содержит только ID записи из нашей БД (короткая строка)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
             text=f"💎 Скачать за {price} Stars",
-            callback_data=f"buy_{file_type}_{file_id}_{price}"
+            callback_data=f"buy_{item_id}"
         )
     ]])
 
-    new_caption = f"{original_caption}\n\n📸 {file_type.capitalize()} • Скачать за {price} Stars"
+    original_caption = message.caption or ""
+    new_caption = f"{original_caption}\n\n📸 {file_type.capitalize()} • Доступен после оплаты"
 
     try:
         await bot.edit_message_caption(
@@ -97,38 +113,39 @@ async def handle_channel_post(message: Message):
             caption=new_caption,
             reply_markup=keyboard
         )
-        print(f"   ✅ Кнопка добавлена успешно!")
     except Exception as e:
-        print(f"   ❌ Ошибка редактирования: {e}")
-        # Запасной вариант — текст под постом
-        try:
-            await bot.send_message(
-                chat_id=message.chat.id,
-                text=new_caption,
-                reply_to_message_id=message.message_id,
-                reply_markup=keyboard
-            )
-            print("   ✅ Добавлен текст под постом")
-        except Exception as e2:
-            print(f"   ❌ Полная ошибка: {e2}")
+        logging.error(f"Ошибка редактирования: {e}")
 
-# =================== ОПЛАТА (без изменений) ===================
+# =================== ОБРАБОТКА ОПЛАТЫ ===================
 @router.callback_query(F.data.startswith("buy_"))
 async def process_buy(callback: CallbackQuery):
-    _, file_type, file_id, price_str = callback.data.split("_", 3)
-    price = int(price_str)
+    item_id = callback.data.split("_")[1]
+    
+    # Достаем реальный file_id из базы
+    cur.execute("SELECT file_id, file_type, price FROM items WHERE id = ?", (item_id,))
+    item = cur.fetchone()
+    
+    if not item:
+        await callback.answer("Файл не найден или устарел 😔", show_alert=True)
+        return
 
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=f"Скачать {file_type}",
-        description="Полный файл без ограничений",
-        payload=f"media_{file_id}_{file_type}",
-        provider_token="",
-        currency="XTR",
-        prices=[LabeledPrice(label=f"{file_type.capitalize()}", amount=price)],
-        protect_content=True
-    )
-    await callback.answer("Переходим к оплате...")
+    file_id, file_type, price = item
+
+    # Отправляем инвойс в ЛИЧКУ пользователю
+    try:
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=f"Доступ к файлу ({file_type})",
+            description="Оплатите доступ, чтобы получить файл в личные сообщения.",
+            payload=f"media_{item_id}", 
+            provider_token="", # Пусто для Telegram Stars
+            currency="XTR",
+            prices=[LabeledPrice(label="Оплата контента", amount=int(price))],
+            protect_content=True
+        )
+        await callback.answer()
+    except Exception as e:
+        await callback.answer("Сначала запустите бота в ЛС!", show_alert=True)
 
 @router.pre_checkout_query()
 async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
@@ -136,41 +153,61 @@ async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
 
 @router.message(F.successful_payment)
 async def successful_payment(message: Message):
-    payment = message.successful_payment
-    payload = payment.invoice_payload
+    payload = message.successful_payment.invoice_payload
+    item_id = payload.split("_")[1]
 
-    try:
-        _, file_id, file_type = payload.split("_")[:3]
-    except:
-        await message.answer("Ошибка 😔")
+    # Получаем данные файла по ID из payload
+    cur.execute("SELECT file_id, file_type, price FROM items WHERE id = ?", (item_id,))
+    item = cur.fetchone()
+
+    if not item:
+        await message.answer("Ошибка: данные файла не найдены.")
         return
 
+    file_id, file_type, price = item
+
+    # Сохраняем факт оплаты
     cur.execute("INSERT INTO payments (user_id, file_id, file_type, price, charge_id) VALUES (?, ?, ?, ?, ?)",
-                (message.from_user.id, file_id, file_type, payment.total_amount, payment.telegram_payment_charge_id))
+                (message.from_user.id, file_id, file_type, price, message.successful_payment.telegram_payment_charge_id))
     conn.commit()
 
+    # Отправляем файл
+    await message.answer("✅ Оплата прошла успешно! Отправляю файл:")
+    
     try:
         if file_type == "photo":
-            await bot.send_photo(message.from_user.id, file_id, caption="✅ Вот твой полный файл.")
+            await message.answer_photo(file_id)
         elif file_type == "video":
-            await bot.send_video(message.from_user.id, file_id, caption="✅ Вот твой полный файл.")
+            await message.answer_video(file_id)
+        elif file_type == "audio":
+            await message.answer_audio(file_id)
+        elif file_type == "voice":
+            await message.answer_voice(file_id)
         else:
-            await bot.send_document(message.from_user.id, file_id, caption="✅ Вот твой полный файл.")
-    except:
-        await message.answer("Не удалось отправить файл.")
+            await message.answer_document(file_id)
+    except Exception as e:
+        await message.answer(f"Ошибка при отправке: {e}")
 
 @router.message(Command("stats"))
 async def stats(message: Message):
     if message.from_user.id not in ADMINS:
         return
-    cur.execute("SELECT COUNT(*) as total, SUM(price) as earned FROM payments")
-    row = cur.fetchone()
-    await message.answer(f"📊 Статистика:\nПродаж: {row[0]}\nЗаработано: {row[1] or 0} Stars")
+    cur.execute("SELECT COUNT(*), SUM(price) FROM payments")
+    count, earned = cur.fetchone()
+    await message.answer(f"📊 Статистика:\nПродаж: {count}\nЗаработано: {earned or 0} Stars")
 
+# =================== ЗАПУСК ===================
 async def main():
     logging.basicConfig(level=logging.INFO)
-    print("🚀 Бот для канала запущен... Жду посты с медиа.")
+    
+    # 1. Удаляем вебхук и старые обновления, чтобы избежать ConflictError
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    print("🚀 Бот запущен и очищен от старых сессий.")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Бот выключен")
