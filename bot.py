@@ -58,21 +58,29 @@ async def check_sub(user_id):
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    if await check_sub(message.from_user.id):
-        await message.answer("Добро пожаловать в магазин! Выбери категорию:", reply_markup=get_main_kb())
+    # Прямая проверка: если это ТЫ (админ), пускаем сразу без проверок
+    if message.from_user.id == ADMIN_ID:
+        return await message.answer("Привет, Хозяин! Твоё меню:", reply_markup=get_main_kb())
+
+    # Для остальных проверяем подписку
+    is_subscribed = await check_sub(message.from_user.id)
+    if is_subscribed:
+        await message.answer("Подписка подтверждена! Выберите категорию:", reply_markup=get_main_kb())
     else:
         kb = InlineKeyboardBuilder()
         kb.row(InlineKeyboardButton(text="🔔 Подписаться на канал", url=CHANNEL_URL))
         kb.row(InlineKeyboardButton(text="✅ Проверить подписку", callback_data="check_sub"))
-        await message.answer("Для доступа к боту подпишись на канал!", reply_markup=kb.as_markup())
+        # Шлем инлайн-кнопку, чтобы человек точно увидел, что делать
+        await message.answer("Для использования бота нужно подписаться на наш канал!", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_callback(callback: types.CallbackQuery):
     if await check_sub(callback.from_user.id):
-        await callback.message.answer("Подписка подтверждена!", reply_markup=get_main_kb())
+        # Удаляем сообщение с кнопкой подписки и шлем меню
+        await callback.message.delete()
+        await callback.message.answer("Отлично! Теперь всё доступно:", reply_markup=get_main_kb())
     else:
-        await callback.answer("Подписка не обнаружена!", show_alert=True)
-
+        await callback.answer("Вы всё еще не подписаны на канал!", show_alert=True)
 @dp.message(F.text.in_(["🖼 Изображения", "🎵 Музыка", "📹 Видео", "📜 Стихи", "📝 Тексты песен", "📱 Приложения"]))
 async def show_items(message: types.Message):
     cat_map = {"🖼 Изображения": "image", "🎵 Музыка": "music", "📹 Видео": "video", "📜 Стихи": "poem", "📝 Тексты песен": "lyrics", "📱 Приложения": "app"}
