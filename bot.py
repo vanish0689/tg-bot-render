@@ -1,227 +1,178 @@
-import os
-import json
 import asyncio
-from aiogram import Bot, Dispatcher, types, F, Router
+import logging
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiogram.filters import Command
-from aiogram.types import (
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    LabeledPrice,
-    PreCheckoutQuery,
-)
+from aiogram import types
+import sqlite3
+import os
 
-# ---------------------- НАСТРОЙКИ ----------------------
+# ========================= НАСТРОЙКИ =========================
+BOT_TOKEN = "ТОКЕН_БОТА_СЮДА"  # ← замени
 
-TOKEN = os.getenv("BOT_TOKEN")
-bot = Bot(token=TOKEN)
+# Цены в Stars (можно менять в любой момент)
+PRICES = {
+    "photo": 5,
+    "video": 15,
+    "document": 10,
+    "audio": 10,
+    "voice": 8,
+}
+
+# Админы (твой user_id)
+ADMINS = [ТВОЙ_USER_ID]  # ← замени на свой
+
+# ============================================================
+
+bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+dp = Dispatcher()
 router = Router()
+dp.include_router(router)
 
-# ТВОЯ ГРУППА
-GROUP_ID = -3349514214
+# Простая база данных
+conn = sqlite3.connect("media_bot.db", check_same_thread=False)
+cur = conn.cursor()
+cur.execute("""CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY,
+                user_id INTEGER,
+                file_id TEXT,
+                file_type TEXT,
+                price INTEGER,
+                charge_id TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)""")
+conn.commit()
 
-# ТВОЙ USER ID (только ты можешь добавлять медиа)
-ADMIN_ID = 7770818181
+def get_price(file_type: str) -> int:
+    return PRICES.get(file_type, 10)
 
-DB_FILE = "db.json"
-TRACK_PRICE = 5
-REF_PERCENT = 0.20
+# =================== ОБРАБОТКА МЕДИА В ГРУППЕ ===================
+@router.message(F.chat.type.in_({"group", "supergroup"}))
+async def handle_media(message: Message):
+    if not message.media_group_id and (message.photo or message.video or message.document or message.audio or message.voice):
+        file_type = None
+        file_id = None
+        caption = message.caption or ""
 
+        if message.photo:
+            file_type = "photo"
+            file_id = message.photo[-1].file_id
+        elif message.video:
+            file_type = "video"
+            file_id = message.video.file_id
+        elif message.document:
+            file_type = "document"
+            file_id = message.document.file_id
+        elif message.audio:
+            file_type = "audio"
+            file_id = message.audio.file_id
+        elif message.voice:
+            file_type = "voice"
+            file_id = message.voice.file_id
 
-# ---------------------- БАЗА ДАННЫХ ----------------------
+        if not file_type:
+            return
 
-def load_db():
-    if not os.path.exists(DB_FILE):
-        return {"tracks": [], "users": {}}
-    with open(DB_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        price = get_price(file_type)
 
-def save_db(db):
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(db, f, indent=4, ensure_ascii=False)
+        # Удаляем оригинал
+        await bot.delete_message(message.chat.id, message.message_id)
 
-def add_track(file_id, title):
-    db = load_db()
-    track_id = len(db["tracks"]) + 1
-    db["tracks"].append({
-        "id": track_id,
-        "title": title,
-        "file_id": file_id,
-        "price": TRACK_PRICE
-    })
-    save_db(db)
+        # Кнопка оплаты
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(
+                text=f"💎 Скачать за {price} Stars",
+                callback_data=f"buy_{file_type}_{file_id}_{price}"
+            )
+        ]])
 
-def get_tracks():
-    return load_db()["tracks"]
+        # Отправляем превью с кнопкой
+        if file_type == "photo":
+            await bot.send_photo(
+                chat_id=message.chat.id,
+                photo=file_id,
+                caption=f"📸 Фото • Скачать за {price} Stars\n\n{caption}",
+                reply_markup=keyboard
+            )
+        elif file_type == "video":
+            await bot.send_video(
+                chat_id=message.chat.id,
+                video=file_id,
+                caption=f"🎥 Видео • Скачать за {price} Stars\n\n{caption}",
+                reply_markup=keyboard
+            )
+        else:
+            await bot.send_document(
+                chat_id=message.chat.id,
+                document=file_id,
+                caption=f"📄 Файл ({file_type}) • Скачать за {price} Stars\n\n{caption}",
+                reply_markup=keyboard
+            )
 
-def get_track(track_id):
-    db = load_db()
-    for t in db["tracks"]:
-        if t["id"] == track_id:
-            return t
-    return None
-
-def set_referral(user_id, ref_id):
-    db = load_db()
-    users = db.setdefault("users", {})
-    if str(user_id) not in users:
-        users[str(user_id)] = {"ref": ref_id, "earned": 0}
-    save_db(db)
-
-def add_ref_bonus(buyer_id, price):
-    db = load_db()
-    users = db.setdefault("users", {})
-    buyer = users.get(str(buyer_id))
-    if buyer and buyer.get("ref"):
-        ref = buyer["ref"]
-        bonus = int(price * REF_PERCENT)
-        if str(ref) not in users:
-            users[str(ref)] = {"ref": None, "earned": 0}
-        users[str(ref)]["earned"] += bonus
-        save_db(db)
-
-
-# ---------------------- ЛОВИМ МЕДИА (ТОЛЬКО ТЫ, ТОЛЬКО В ГРУППЕ) ----------------------
-
-@router.message(
-    (F.chat.id == GROUP_ID)
-    & (F.from_user.id == ADMIN_ID)
-    & (F.audio | F.photo | F.video | F.document | F.voice | F.video_note)
-)
-async def catch_media(message: types.Message):
-    file_id = None
-    title = "Медиа"
-
-    if message.audio:
-        file_id = message.audio.file_id
-        title = message.audio.title or message.audio.file_name or "Аудио"
-
-    elif message.document:
-        file_id = message.document.file_id
-        title = message.document.file_name or "Документ"
-
-    elif message.photo:
-        file_id = message.photo[-1].file_id
-        title = "Фото"
-
-    elif message.video:
-        file_id = message.video.file_id
-        title = "Видео"
-
-    elif message.voice:
-        file_id = message.voice.file_id
-        title = "Голосовое"
-
-    elif message.video_note:
-        file_id = message.video_note.file_id
-        title = "Видеосообщение"
-
-    if not file_id:
-        return
-
-    add_track(file_id, title)
-    await message.reply(f"✅ Добавлено в магазин: {title}")
-
-
-# ---------------------- СТАРТ ----------------------
-
-@router.message(Command("start"))
-async def start_cmd(message: types.Message):
-    args = message.text.split()
-
-    if len(args) > 1 and args[1].startswith("ref"):
-        ref_id = args[1].replace("ref", "")
-        if ref_id != str(message.from_user.id):
-            set_referral(message.from_user.id, ref_id)
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎧 Магазин", callback_data="open_shop")],
-        [InlineKeyboardButton(text="👥 Реферальная ссылка", callback_data="ref_link")],
-    ])
-
-    await message.answer("Добро пожаловать!", reply_markup=kb)
-
-
-# ---------------------- МАГАЗИН ----------------------
-
-@router.callback_query(F.data == "open_shop")
-async def open_shop(callback: types.CallbackQuery):
-    tracks = get_tracks()
-
-    if not tracks:
-        await callback.message.answer("Пока нет медиа в магазине.")
-        return
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(
-            text=f"{t['title']} — {t['price']}⭐",
-            callback_data=f"buy_{t['id']}"
-        )]
-        for t in tracks
-    ])
-
-    await callback.message.answer("🎧 Выберите медиа:", reply_markup=kb)
-
-
-# ---------------------- ОПЛАТА ----------------------
-
+# =================== ОПЛАТА ===================
 @router.callback_query(F.data.startswith("buy_"))
-async def buy_track(callback: types.CallbackQuery):
-    track_id = int(callback.data.replace("buy_", ""))
-    item = get_track(track_id)
-    if not item:
-        await callback.message.answer("Медиа не найдено.")
-        return
+async def process_buy(callback: CallbackQuery):
+    _, file_type, file_id, price_str = callback.data.split("_")
+    price = int(price_str)
 
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title=item["title"],
-        description="Покупка медиа",
-        payload=str(track_id),
-        provider_token="",
-        currency="XTR",
-        prices=[LabeledPrice(label=item["title"], amount=item["price"])],
+        title=f"Скачать {file_type}",
+        description="Полный файл без водяных знаков и ограничений",
+        payload=f"media_{file_id}_{file_type}",  # уникальный payload
+        provider_token="",           # для Stars оставляем пустым
+        currency="XTR",              # Telegram Stars
+        prices=[LabeledPrice(label=f"{file_type.capitalize()}", amount=price)],
+        protect_content=True
     )
+    await callback.answer()
 
-
+# Pre-checkout (обязательно отвечаем за 10 секунд)
 @router.pre_checkout_query()
-async def process_pre_checkout(pre_checkout: PreCheckoutQuery):
-    await pre_checkout.answer(ok=True)
+async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
-
+# Успешная оплата
 @router.message(F.successful_payment)
-async def successful_payment(message: types.Message):
-    track_id = int(message.successful_payment.invoice_payload)
-    item = get_track(track_id)
-    if not item:
-        await message.answer("Медиа не найдено.")
+async def successful_payment(message: Message):
+    payment = message.successful_payment
+    payload = payment.invoice_payload
+    charge_id = payment.telegram_payment_charge_id
+
+    try:
+        _, file_id, file_type = payload.split("_")[:3]
+    except:
+        await message.answer("Что-то пошло не так с файлом 😔")
         return
 
-    add_ref_bonus(message.from_user.id, item["price"])
-    await message.answer_document(item["file_id"])
+    # Сохраняем в базу
+    cur.execute("INSERT INTO payments (user_id, file_id, file_type, price, charge_id) VALUES (?, ?, ?, ?, ?)",
+                (message.from_user.id, file_id, file_type, payment.total_amount, charge_id))
+    conn.commit()
 
+    # Отправляем файл в ЛС
+    try:
+        if file_type == "photo":
+            await bot.send_photo(message.from_user.id, file_id, caption="✅ Вот твой файл. Спасибо!")
+        elif file_type == "video":
+            await bot.send_video(message.from_user.id, file_id, caption="✅ Вот твой файл. Спасибо!")
+        else:
+            await bot.send_document(message.from_user.id, file_id, caption="✅ Вот твой файл. Спасибо!")
+    except:
+        await message.answer("Не удалось отправить файл. Напиши мне в личку.")
 
-# ---------------------- РЕФЕРАЛКА ----------------------
+# =================== АДМИН-ПАНЕЛЬ ===================
+@router.message(Command("stats"))
+async def stats(message: Message):
+    if message.from_user.id not in ADMINS:
+        return
+    cur.execute("SELECT COUNT(*) as total, SUM(price) as earned FROM payments")
+    row = cur.fetchone()
+    await message.answer(f"📊 Статистика:\n\nВсего продаж: {row[0]}\nЗаработано Stars: {row[1] or 0}")
 
-@router.callback_query(F.data == "ref_link")
-async def ref_link(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    me = await bot.me()
-    link = f"https://t.me/{me.username}?start=ref{user_id}"
-
-    db = load_db()
-    earned = db.get("users", {}).get(str(user_id), {}).get("earned", 0)
-
-    await callback.message.answer(
-        f"👥 Ваша реферальная ссылка:\n{link}\n\n"
-        f"💰 Заработано: {earned}⭐"
-    )
-
-
-# ---------------------- ЗАПУСК ----------------------
-
+# Запуск
 async def main():
-    dp = Dispatcher()
-    dp.include_router(router)
+    logging.basicConfig(level=logging.INFO)
+    print("Бот запущен...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
