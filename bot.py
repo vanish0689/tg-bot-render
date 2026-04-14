@@ -169,4 +169,4 @@ async def admin_del_confirm(callback: types.CallbackQuery):
     await callback.message.delete()
 
 async def main(): await dp.start_polling(bot)
-if _name_ == "_main_": asyncio.run(main())
+if __name__ == "__main__": asyncio.run(main())
