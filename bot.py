@@ -1,16 +1,16 @@
 import asyncio
 import logging
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery
 from aiogram.filters import Command
-from aiogram import types
 import sqlite3
-import os
 
 # ========================= НАСТРОЙКИ =========================
-BOT_TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"  # ← замени
+BOT_TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"
 
-# Цены в Stars (можно менять в любой момент)
+# Цены в Stars (меняй здесь, если захочешь)
 PRICES = {
     "photo": 5,
     "video": 15,
@@ -19,17 +19,23 @@ PRICES = {
     "voice": 8,
 }
 
-# Админы (твой user_id)
-ADMINS = [7770818181]  # ← замени на свой
+# Твой Telegram ID
+ADMINS = [7770818181]
 
 # ============================================================
 
-bot = Bot(token=BOT_TOKEN, parse_mode="HTML")
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(
+        parse_mode=ParseMode.HTML
+    )
+)
+
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)
 
-# Простая база данных
+# База данных для хранения продаж
 conn = sqlite3.connect("media_bot.db", check_same_thread=False)
 cur = conn.cursor()
 cur.execute("""CREATE TABLE IF NOT EXISTS payments (
@@ -69,12 +75,12 @@ async def handle_media(message: Message):
             file_type = "voice"
             file_id = message.voice.file_id
 
-        if not file_type:
+        if not file_type or not file_id:
             return
 
         price = get_price(file_type)
 
-        # Удаляем оригинал
+        # Удаляем оригинал, чтобы не скачали бесплатно
         await bot.delete_message(message.chat.id, message.message_id)
 
         # Кнопка оплаты
@@ -85,7 +91,7 @@ async def handle_media(message: Message):
             )
         ]])
 
-        # Отправляем превью с кнопкой
+        # Превью с кнопкой
         if file_type == "photo":
             await bot.send_photo(
                 chat_id=message.chat.id,
@@ -111,68 +117,65 @@ async def handle_media(message: Message):
 # =================== ОПЛАТА ===================
 @router.callback_query(F.data.startswith("buy_"))
 async def process_buy(callback: CallbackQuery):
-    _, file_type, file_id, price_str = callback.data.split("_")
+    _, file_type, file_id, price_str = callback.data.split("_", 3)
     price = int(price_str)
 
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title=f"Скачать {file_type}",
-        description="Полный файл без водяных знаков и ограничений",
-        payload=f"media_{file_id}_{file_type}",  # уникальный payload
-        provider_token="",           # для Stars оставляем пустым
-        currency="XTR",              # Telegram Stars
+        description="Полный файл без ограничений",
+        payload=f"media_{file_id}_{file_type}",
+        provider_token="",
+        currency="XTR",
         prices=[LabeledPrice(label=f"{file_type.capitalize()}", amount=price)],
         protect_content=True
     )
-    await callback.answer()
+    await callback.answer("Переходим к оплате...")
 
-# Pre-checkout (обязательно отвечаем за 10 секунд)
 @router.pre_checkout_query()
 async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
-# Успешная оплата
 @router.message(F.successful_payment)
 async def successful_payment(message: Message):
     payment = message.successful_payment
     payload = payment.invoice_payload
-    charge_id = payment.telegram_payment_charge_id
 
     try:
         _, file_id, file_type = payload.split("_")[:3]
     except:
-        await message.answer("Что-то пошло не так с файлом 😔")
+        await message.answer("Ошибка при отправке файла 😔")
         return
 
-    # Сохраняем в базу
+    # Записываем продажу
     cur.execute("INSERT INTO payments (user_id, file_id, file_type, price, charge_id) VALUES (?, ?, ?, ?, ?)",
-                (message.from_user.id, file_id, file_type, payment.total_amount, charge_id))
+                (message.from_user.id, file_id, file_type, payment.total_amount, payment.telegram_payment_charge_id))
     conn.commit()
 
-    # Отправляем файл в ЛС
+    # Отправляем файл в личку
     try:
         if file_type == "photo":
-            await bot.send_photo(message.from_user.id, file_id, caption="✅ Вот твой файл. Спасибо!")
+            await bot.send_photo(message.from_user.id, file_id, caption="✅ Вот твой полный файл. Спасибо!")
         elif file_type == "video":
-            await bot.send_video(message.from_user.id, file_id, caption="✅ Вот твой файл. Спасибо!")
+            await bot.send_video(message.from_user.id, file_id, caption="✅ Вот твой полный файл. Спасибо!")
         else:
-            await bot.send_document(message.from_user.id, file_id, caption="✅ Вот твой файл. Спасибо!")
+            await bot.send_document(message.from_user.id, file_id, caption="✅ Вот твой полный файл. Спасибо!")
     except:
-        await message.answer("Не удалось отправить файл. Напиши мне в личку.")
+        await message.answer("Не удалось отправить файл. Напиши мне напрямую.")
 
-# =================== АДМИН-ПАНЕЛЬ ===================
+# =================== АДМИН-КОМАНДА ===================
 @router.message(Command("stats"))
 async def stats(message: Message):
     if message.from_user.id not in ADMINS:
         return
     cur.execute("SELECT COUNT(*) as total, SUM(price) as earned FROM payments")
     row = cur.fetchone()
-    await message.answer(f"📊 Статистика:\n\nВсего продаж: {row[0]}\nЗаработано Stars: {row[1] or 0}")
+    await message.answer(f"📊 Статистика бота:\n\nПродаж всего: {row[0]}\nЗаработано Stars: {row[1] or 0}")
 
-# Запуск
+# =================== ЗАПУСК ===================
 async def main():
     logging.basicConfig(level=logging.INFO)
-    print("Бот запущен...")
+    print("🚀 Бот bot.py запущен и готов к работе...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
