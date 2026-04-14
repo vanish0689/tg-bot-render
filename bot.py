@@ -8,7 +8,7 @@ import sqlite3
 import os
 
 # ========================= НАСТРОЙКИ =========================
-BOT_TOKEN = "ТОКЕН_БОТА_СЮДА"  # ← замени
+BOT_TOKEN = "8608551495:AAGFhxbLCeL0gQN7Q6LpHZCgJ5S6H4xhljY"  # ← замени
 
 # Цены в Stars (можно менять в любой момент)
 PRICES = {
